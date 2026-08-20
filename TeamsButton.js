@@ -1,6 +1,6 @@
 // ==UserScript==
-// @name         KPMG Jamf Pro - Teams Deep Link Linkifier
-// @namespace    kpmg.jamfpro.teamslink
+// @name         Your_ORG Jamf Pro - Teams Deep Link Linkifier
+// @namespace    Your_ORG.jamfpro.teamslink
 // @version      1.0
 // @description  Turns the plain-text Teams deep-link EA value shown on Jamf Pro computer inventory pages into a real clickable hyperlink.
 // @author       Russell Collis
@@ -12,9 +12,9 @@
 
 /*
 =============================================================================
-[KPMG] 2026
+[Your_ORG] 2026
 =============================================================================
-KPMG Jamf Pro - Teams Deep Link Linkifier
+Your_ORG Jamf Pro - Teams Deep Link Linkifier
 =============================================================================
 Description:   Browser userscript (Tampermonkey/Userscripts extension) that
                scans the rendered Jamf Pro computer inventory page for the
@@ -37,9 +37,9 @@ Requirements:  - Tampermonkey (or Userscripts) browser extension installed
 Output:        No script output - purely a visual/interaction change made
                to the rendered Jamf Pro page in the browser.
 
-IMPORTANT:     This script is specifically designed for KPMG's macOS
+IMPORTANT:     This script is specifically designed for Your_ORG's macOS
                environment and internal Jamf Pro instance and should only
-               be used within KPMG's managed infrastructure/tooling. It
+               be used within Your_ORG's managed infrastructure/tooling. It
                contains organisation-specific configurations and should
                not be used outside of this intended environment.
 =============================================================================
@@ -60,7 +60,7 @@ Changelog
     // -----------------------------------------------------------------------
     // Regex matching the Teams deep-link URL format produced by the Teams
     // Chat Deep Link Extension Attribute, e.g.
-    // https://teams.microsoft.com/l/chat/0/0?users=name@kpmg.com
+    // https://teams.microsoft.com/l/chat/0/0?users=name@Your_ORG.com
     // -----------------------------------------------------------------------
     const teamsLinkPattern = /https:\/\/teams\.microsoft\.com\/l\/chat\/0\/0\?users=[^\s<>"']+/g;
 
