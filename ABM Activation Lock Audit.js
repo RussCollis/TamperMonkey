@@ -1,9 +1,9 @@
 // ==UserScript==
-// @name         ABM Activation Lock Audit
-// @namespace    macos.abm.activationlockaudit
-// @version      1.6
+// @name         KPMG ABM Activation Lock Audit - 2.0.1
+// @namespace    kpmg.macos.abm.activationlockaudit
+// @version      2.0.1
 // @description  Overlay button on Apple Business Manager to scan all devices and export Activation Lock status to CSV
-// @author       Gabriel Sroka
+// @author       Russell Collis
 // @match        https://business.apple.com/*
 // @match        https://school.apple.com/*
 // @grant        none
@@ -11,7 +11,7 @@
 // ==/UserScript==
 
 /* =============================================================================
- *  ABM Activation Lock Audit - Tampermonkey Userscript
+ * KPMG ABM Activation Lock Audit - Tampermonkey Userscript
  * =============================================================================
  * Description:   Injects a floating control panel onto Apple Business
  *                Manager with Start/Stop/Resume/Download controls. Scans
@@ -19,7 +19,8 @@
  *                authenticated) GraphQL endpoint and records Activation
  *                Lock status, exporting to CSV.
  *
-  * Created:       20/08/2026
+ * Author:        Russell Collis
+ * Created:       20/08/2026
  * Version:       1.0
  *
  * Notes:         Converted from a manual DevTools console script (v2.0) to
@@ -52,10 +53,71 @@
  *                without notice. Only use where the official ABM/Jamf
  *                APIs cannot supply the data (e.g. devices not yet
  *                enrolled in Jamf).
-
+ *
+ * IMPORTANT:     This script is specifically designed for KPMG's macOS
+ *                environment and should only be deployed within KPMG's
+ *                managed infrastructure. It contains organisation-specific
+ *                configurations and should not be used outside of this
+ *                intended environment.
  * =============================================================================
  * Changelog
  * =============================================================================
+ *   21/08/2026 - v2.0.1 - Adds Device.searchInfo.deviceName to the CSV.
+ *   21/08/2026 - v2.0.0 - Uses ABM's confirmed `Device.searchInfo.
+ *                        productFamily` field from the device-list response.
+ *                        Family filtering now happens before Activation Lock
+ *                        detail requests, and the family is carried straight
+ *                        into the CSV. No guessed field is sent to
+ *                        GetDeviceDetails, avoiding its HTTP 400 response.
+ *   21/08/2026 - v1.9.0 - Fixed family-filter scans. Rather than disabling
+ *                        an unsupported GraphQL family field and silently
+ *                        treating every device as "Unknown", the script
+ *                        now tests productFamily, deviceFamily, deviceType,
+ *                        and family on the first device. It uses the first
+ *                        field ABM accepts for the whole scan. If none work,
+ *                        the selected-family scan stops with a clear error
+ *                        and does not create an empty filtered CSV.
+ *   21/08/2026 - v1.8.1 - Changed DEVICE_FAMILY_FIELD guess from "deviceType"
+ *                        to "productFamily", and switched the family
+ *                        comparison to a normalised (lowercase, spaces/
+ *                        hyphens stripped) match instead of an ALL-CAPS
+ *                        enum match. Based on evidence from Warranty
+ *                        Wrangler (KPMG's ABM REST API script), which
+ *                        confirms Apple's official, documented ABM REST
+ *                        API exposes this exact attribute as
+ *                        `.attributes.productFamily` with values such as
+ *                        "Mac" / "iPhone" / "iPad". The internal GraphQL
+ *                        endpoint this script uses is a different API, so
+ *                        this remains an informed guess rather than a
+ *                        confirmed field name - the automatic fallback
+ *                        from v1.8 still applies if it's wrong.
+ *   21/08/2026 - v1.8 - Added device family filtering and a "deviceFamily"
+ *                        CSV column. Filtering is applied CLIENT-SIDE, after
+ *                        each device's Activation Lock detail is fetched -
+ *                        NOT as a server-side ABM query filter, since that
+ *                        approach was already tried (v1.2) and caused
+ *                        timeouts (v1.6). A filtered scan therefore still
+ *                        checks every device; it narrows what is kept, not
+ *                        how much is scanned. Device family is read from a
+ *                        best-guess GraphQL field (now superseded by the
+ *                        candidate-field discovery in v1.9,
+ *                        currently "deviceType") added to the existing
+ *                        batch/individual detail queries. If ABM rejects
+ *                        that field for this tenant, the script detects the
+ *                        schema error on the first batch, disables family
+ *                        lookups for the rest of the run, and shows
+ *                        "Unknown" - Activation Lock data is unaffected.
+ *   21/08/2026 - v1.7 - Batched the Activation Lock detail lookup. Devices
+ *                        were being fetched 350-at-a-time for the device
+ *                        LIST, but the Activation Lock STATUS for each one
+ *                        was still one GraphQL request per device. Detail
+ *                        lookups are now grouped into DETAIL_BATCH_SIZE-
+ *                        sized requests using aliased GraphQL fields (one
+ *                        HTTP round trip covers many devices). If a batch
+ *                        request fails outright (e.g. the undocumented
+ *                        endpoint rejects the aliased query), the script
+ *                        automatically falls back to querying that batch's
+ *                        devices one at a time so the scan cannot stall.
  *   20/08/2026 - v1.6 - Disabled the unverified product-family GraphQL
  *                        filter after it caused ABM request timeouts.
  *   20/08/2026 - v1.5 - Added a request timeout so a stalled ABM request
@@ -80,7 +142,8 @@
 (function () {
   'use strict';
 
-  const LIMIT = 350;
+  const LIMIT = 350;                    // Devices per device-LIST page request.
+  const DETAIL_BATCH_SIZE = 25;         // Devices per Activation Lock DETAIL request.
   const THROTTLE_MS = 150;
   const KEEPALIVE_INTERVAL_MS = 90 * 1000;
   const CHECKPOINT_KEY = 'abmActivationLockAudit_checkpoint';
@@ -88,13 +151,45 @@
   const MAX_ATTEMPTS = 6;
   const BASE_RETRY_DELAY_MS = 2000;
   const FETCH_TIMEOUT_MS = 30 * 1000;
-  // Apple Business Manager's device-search enum values.
+
+  // GUESSED field name for a device's family/type on ABM's GraphQL device
+  // object (e.g. device(serial: $s) { productFamily }). This is NOT from
+  // public documentation for the internal GraphQL endpoint, but "Warranty
+  // Wrangler" (KPMG's ABM REST API script) confirms Apple's OFFICIAL,
+  // documented ABM REST API (api-business.apple.com/v1/orgDevices) exposes
+  // this exact attribute as `.attributes.productFamily`. The internal
+  // GraphQL endpoint used here is a different API, so this is still a
+  // guess - just a much better-informed one than a blind guess would be.
+  // If family always comes back "Unknown" in the CSV, this is the field
+  // name to correct: open DevTools -> Network on the ABM Devices page,
+  // filter the built-in Devices list by type, and inspect the GraphQL
+  // request body for the actual field name, then update this constant.
+  // Apple's REST API returns productFamily values like "Mac" / "iPhone" /
+  // "iPad" rather than an ALL-CAPS enum, so - matching Warranty Wrangler's
+  // normalizeFamily() approach - comparisons here are done after lower-
+  // casing and stripping spaces/hyphens from both sides, rather than
+  // relying on exact casing.
   const PRODUCT_FAMILIES = {
     all: null,
-    mac: 'MAC',
-    iphone: 'IPHONE',
-    ipad: 'IPAD'
+    mac: 'mac',
+    iphone: 'iphone',
+    ipad: 'ipad'
   };
+
+  // Lower-cases and strips spaces/hyphens so "Mac", "mac", "MAC" and
+  // "Apple Watch" / "applewatch" all compare equal. Mirrors Warranty
+  // Wrangler's normalizeFamily() shell function.
+  function normalizeFamily(value) {
+    return (value || '').toLowerCase().replace(/[\s-]/g, '');
+  }
+
+  // Some ABM schemas return a broad family ("iPhone"); others return a
+  // more specific label ("iPhone 15"). Treat the latter as part of the
+  // requested family as well.
+  function familyMatches(value, requestedFamily) {
+    const normalized = normalizeFamily(value);
+    return normalized === requestedFamily || normalized.startsWith(requestedFamily);
+  }
 
   let scanRunning = false;
   let abortRequested = false;
@@ -106,7 +201,7 @@
 
   function injectPanel() {
     const panel = document.createElement('div');
-    panel.id = '-abm-audit-panel';
+    panel.id = 'kpmg-abm-audit-panel';
     panel.style.cssText = `
       position: fixed;
       bottom: 20px;
@@ -123,67 +218,68 @@
     `;
 
     panel.innerHTML = `
-      <div style="font-weight:600; margin-bottom:8px;"> Activation Lock Audit</div>
-      <div id="-abm-status" style="opacity:0.85; margin-bottom:10px; line-height:1.4;">Idle.</div>
-      <div id="-abm-progress-text" style="font-size:11px; opacity:0.78; margin-bottom:4px;">Scan progress: not started</div>
+      <div style="font-weight:600; margin-bottom:8px;">KPMG Activation Lock Audit</div>
+      <div id="kpmg-abm-status" style="opacity:0.85; margin-bottom:10px; line-height:1.4;">Idle.</div>
+      <div id="kpmg-abm-progress-text" style="font-size:11px; opacity:0.78; margin-bottom:4px;">Scan progress: not started</div>
       <div style="height:6px; overflow:hidden; border-radius:3px; background:#3a3a3c; margin-bottom:10px;">
-        <div id="-abm-progress-bar" style="height:100%; width:0%; background:#30d158; transition:width 120ms linear;"></div>
+        <div id="kpmg-abm-progress-bar" style="height:100%; width:0%; background:#30d158; transition:width 120ms linear;"></div>
       </div>
       <label style="display:block; margin-bottom:8px; font-size:12px;">
         Product family
-        <select id="-abm-product-family" style="float:right; max-width:130px; border-radius:4px; border:1px solid #636366; background:#2c2c2e; color:#f5f5f7; padding:2px 4px;">
+        <select id="kpmg-abm-product-family" style="float:right; max-width:130px; border-radius:4px; border:1px solid #636366; background:#2c2c2e; color:#f5f5f7; padding:2px 4px;">
           <option value="all">All devices</option>
           <option value="mac">Mac</option>
           <option value="iphone">iPhone</option>
           <option value="ipad">iPad</option>
         </select>
       </label>
+      <div style="margin:-4px 0 8px; font-size:11px; opacity:0.72; line-height:1.3;">Filter is applied per device as it's checked, so every device is still scanned regardless of family selected - only the saved/exported rows are narrowed.</div>
       <div style="display:flex; gap:6px;">
-        <button id="-abm-start" type="button" style="flex:1; padding:6px 8px; border:none; border-radius:6px; background:#0071e3; color:#fff; cursor:pointer;">Start Scan</button>
-        <button id="-abm-stop" type="button" style="flex:1; padding:6px 8px; border:none; border-radius:6px; background:#3a3a3c; color:#fff; cursor:pointer;" disabled>Stop</button>
+        <button id="kpmg-abm-start" type="button" style="flex:1; padding:6px 8px; border:none; border-radius:6px; background:#0071e3; color:#fff; cursor:pointer;">Start Scan</button>
+        <button id="kpmg-abm-stop" type="button" style="flex:1; padding:6px 8px; border:none; border-radius:6px; background:#3a3a3c; color:#fff; cursor:pointer;" disabled>Stop</button>
       </div>
       <div style="display:flex; gap:6px; margin-top:6px;">
-        <button id="-abm-download" type="button" style="flex:1; padding:6px 8px; border:none; border-radius:6px; background:#3a3a3c; color:#fff; cursor:pointer;">Download current results</button>
+        <button id="kpmg-abm-download" type="button" style="flex:1; padding:6px 8px; border:none; border-radius:6px; background:#3a3a3c; color:#fff; cursor:pointer;">Download current results</button>
       </div>
       <div style="display:flex; gap:6px; margin-top:6px;">
-        <button id="-abm-import" type="button" style="flex:1; padding:6px 8px; border:none; border-radius:6px; background:#3a3a3c; color:#fff; cursor:pointer;">Load source CSV</button>
-        <input id="-abm-source-file" type="file" accept=".csv,text/csv" style="display:none;">
+        <button id="kpmg-abm-import" type="button" style="flex:1; padding:6px 8px; border:none; border-radius:6px; background:#3a3a3c; color:#fff; cursor:pointer;">Load source CSV</button>
+        <input id="kpmg-abm-source-file" type="file" accept=".csv,text/csv" style="display:none;">
       </div>
       <div style="margin-top:6px; font-size:11px; opacity:0.72; line-height:1.3;">Load a previous audit CSV to keep its rows. Existing device IDs will be skipped; new results are appended.</div>
-      <div id="-abm-foreground-warning" style="margin-top:10px; font-size:11px; color:#ff9f0a; display:none;">
+      <div id="kpmg-abm-foreground-warning" style="margin-top:10px; font-size:11px; color:#ff9f0a; display:none;">
         Keep this tab in the foreground - backgrounding it can throttle or pause the scan.
       </div>
     `;
 
     document.body.appendChild(panel);
 
-    document.getElementById('-abm-start').addEventListener('click', onStartClicked);
-    document.getElementById('-abm-stop').addEventListener('click', onStopClicked);
-    document.getElementById('-abm-download').addEventListener('click', () => {
+    document.getElementById('kpmg-abm-start').addEventListener('click', onStartClicked);
+    document.getElementById('kpmg-abm-stop').addEventListener('click', onStopClicked);
+    document.getElementById('kpmg-abm-download').addEventListener('click', () => {
       exportCsv(currentResults, 'manual');
     });
-    document.getElementById('-abm-import').addEventListener('click', () => {
-      document.getElementById('-abm-source-file').click();
+    document.getElementById('kpmg-abm-import').addEventListener('click', () => {
+      document.getElementById('kpmg-abm-source-file').click();
     });
-    document.getElementById('-abm-source-file').addEventListener('change', onSourceFileSelected);
+    document.getElementById('kpmg-abm-source-file').addEventListener('change', onSourceFileSelected);
 
     document.addEventListener('visibilitychange', () => {
-      const warning = document.getElementById('-abm-foreground-warning');
+      const warning = document.getElementById('kpmg-abm-foreground-warning');
       if (!warning) return;
       warning.style.display = (document.hidden && scanRunning) ? 'block' : 'none';
     });
   }
 
   function setStatus(text) {
-    const el = document.getElementById('-abm-status');
+    const el = document.getElementById('kpmg-abm-status');
     if (el) el.textContent = text;
   }
 
   function setRunningUiState(running) {
     scanRunning = running;
-    const startBtn = document.getElementById('-abm-start');
-    const stopBtn = document.getElementById('-abm-stop');
-    const productFamily = document.getElementById('-abm-product-family');
+    const startBtn = document.getElementById('kpmg-abm-start');
+    const stopBtn = document.getElementById('kpmg-abm-stop');
+    const productFamily = document.getElementById('kpmg-abm-product-family');
     if (startBtn) startBtn.disabled = running;
     if (stopBtn) stopBtn.disabled = !running;
     if (productFamily) productFamily.disabled = running;
@@ -194,7 +290,7 @@
   let totalDevicesInScope = null;
 
   function selectedProductFamily() {
-    const value = document.getElementById('-abm-product-family')?.value || 'all';
+    const value = document.getElementById('kpmg-abm-product-family')?.value || 'all';
     return PRODUCT_FAMILIES[value] ?? null;
   }
 
@@ -204,8 +300,8 @@
   }
 
   function updateProgress(scanned, saved, state = '') {
-    const text = document.getElementById('-abm-progress-text');
-    const bar = document.getElementById('-abm-progress-bar');
+    const text = document.getElementById('kpmg-abm-progress-text');
+    const bar = document.getElementById('kpmg-abm-progress-bar');
     const percentage = totalDevicesInScope === null
       ? 0
       : Math.min(100, (scanned / Math.max(totalDevicesInScope, 1)) * 100);
@@ -227,12 +323,6 @@
       setStatus('Starting scan…');
       let resumeStart = 0;
       const productFamily = selectedProductFamily();
-
-      if (productFamily) {
-        setStatus('Product-family filtering is temporarily unavailable. Select “All devices” to scan.');
-        updateProgress(0, currentResults.length, 'select All devices to start');
-        return;
-      }
 
       const checkpoint = loadCheckpoint();
       if (checkpoint) {
@@ -273,7 +363,7 @@
 
   function onStopClicked() {
     abortRequested = true;
-    setStatus('Stopping after current device... partial results will be exported.');
+    setStatus('Stopping after current batch... partial results will be exported.');
   }
 
   async function onSourceFileSelected(event) {
@@ -340,6 +430,8 @@
     const idColumn = findColumn('deviceid', 'id', 'serial', 'serialnumber');
     const lockTypeColumn = findColumn('activationlocktype', 'locktype');
     const statusColumn = findColumn('activationlockstatus', 'status');
+    const familyColumn = findColumn('devicefamily', 'family', 'producttype', 'devicetype');
+    const nameColumn = findColumn('devicename', 'name', 'marketingname');
 
     if (idColumn === -1) {
       throw new Error('expected a deviceId column (or id, serial, or serialNumber)');
@@ -352,7 +444,11 @@
       byDeviceId.set(id, {
         id,
         lockType: lockTypeColumn === -1 ? 'Unknown' : (row[lockTypeColumn] || 'Unknown').trim(),
-        status: statusColumn === -1 ? 'Unknown' : (row[statusColumn] || 'Unknown').trim()
+        status: statusColumn === -1 ? 'Unknown' : (row[statusColumn] || 'Unknown').trim(),
+        // Older CSVs (pre-v1.8) won't have a family column - default to
+        // Unknown rather than dropping the row.
+        family: familyColumn === -1 ? 'Unknown' : (row[familyColumn] || 'Unknown').trim(),
+        name: nameColumn === -1 ? 'Unknown' : (row[nameColumn] || 'Unknown').trim()
       });
     }
 
@@ -409,8 +505,8 @@
       return;
     }
 
-    const header = 'deviceId,activationLockType,activationLockStatus\n';
-    const rows = results.map(r => [r.id, r.lockType, r.status].map(csvEscape).join(',')).join('\n');
+    const header = 'deviceId,deviceName,deviceFamily,activationLockType,activationLockStatus\n';
+    const rows = results.map(r => [r.id, r.name ?? 'Unknown', r.family ?? 'Unknown', r.lockType, r.status].map(csvEscape).join(',')).join('\n');
     const csv = header + rows;
 
     const blob = new Blob([csv], { type: 'text/csv' });
@@ -467,16 +563,67 @@
   // ---------------------------------------------------------------------
   // Main scan
   // ---------------------------------------------------------------------
+  //
+  // Devices are read from getDevices() one at a time (it internally pages
+  // the LIST 350-at-a-time via LIMIT), but are not looked up individually
+  // any more. Instead each new (not-already-known) device is pushed into
+  // pendingBatch and, once pendingBatch reaches DETAIL_BATCH_SIZE, the
+  // whole batch's Activation Lock status is fetched in a single aliased
+  // GraphQL request via flushBatch().
 
   async function runScan(resumeStart, results, productFamily) {
     let processed = results.length;
     let scanPosition = resumeStart;
+    let lastAutoDownloadAt = processed;
     const knownDeviceIds = new Set(results.map(result => result.id));
+    let pendingBatch = []; // Devices collected but not yet detail-fetched.
+
+    // Fetches Activation Lock status (and device family) for every device
+    // currently sitting in pendingBatch, applies the client-side family
+    // filter, appends matches to results, then empties pendingBatch.
+    async function flushBatch() {
+      if (pendingBatch.length === 0) return;
+
+      const batch = pendingBatch;
+      pendingBatch = [];
+
+      const detailsBySerial = await getDeviceDetailsBatchSafe(batch.map(device => device.id));
+
+      for (const device of batch) {
+        const details = detailsBySerial.get(device.id) || {};
+        knownDeviceIds.add(device.id);
+
+        // Client-side filter: every device still has to be fetched to know
+        // its family (the server-side ABM filter caused timeouts - see the
+        // v1.6 changelog), so this only narrows what gets kept, not scan time.
+        results.push({
+          id: device.id,
+          name: device.name ?? 'Unknown',
+          lockType: details.lockType ?? 'Unknown',
+          status: details.status ?? 'Unknown',
+          family: device.family ?? 'Unknown'
+        });
+        processed++;
+      }
+
+      const filterNote = productFamily ? ` matching ${productFamily}` : '';
+      setStatus(`Saved ${processed} devices${filterNote} (scanned ${scanPosition}, batch of ${batch.length})...`);
+      updateProgress(scanPosition, processed);
+      saveCheckpoint(scanPosition, results, productFamily);
+
+      if (processed - lastAutoDownloadAt >= AUTO_DOWNLOAD_EVERY) {
+        exportCsv(results, 'checkpoint');
+        lastAutoDownloadAt = processed;
+      }
+    }
 
     try {
       setStatus('Fetching the device list…');
       for await (const device of getDevices(resumeStart, productFamily)) {
         if (abortRequested) {
+          // Flush whatever is already buffered so nothing already pulled
+          // from the device list is lost, then stop.
+          await flushBatch();
           saveCheckpoint(scanPosition, results, productFamily);
           setStatus(`Stopped by user at ${processed} saved devices. Exporting partial results.`);
           updateProgress(scanPosition, processed, 'stopped');
@@ -485,6 +632,14 @@
         }
 
         scanPosition++;
+
+        // The family is returned by ABM's documented-in-practice device-list
+        // shape: Device.searchInfo.productFamily. Filter before requesting
+        // Activation Lock details, avoiding unnecessary detail calls.
+        if (productFamily && !familyMatches(device.family, productFamily)) {
+          updateProgress(scanPosition, processed, 'device family skipped');
+          continue;
+        }
 
         // A loaded source file is the baseline. Do not re-query a device
         // already present in it (or one restored from a checkpoint).
@@ -495,29 +650,16 @@
           continue;
         }
 
-        const detail = await getDeviceDetailsSafe(device.id);
+        pendingBatch.push(device);
 
-        results.push({
-          id: device.id,
-          lockType: detail?.activationLockStatus?.lockType ?? 'Unknown',
-          status: detail?.activationLockStatus?.status ?? 'Unknown'
-        });
-        knownDeviceIds.add(device.id);
-
-        processed++;
-        setStatus(`Saved ${processed} devices (scanned ${scanPosition})...`);
-        updateProgress(scanPosition, processed);
-
-        if (scanPosition % 50 === 0) {
-          saveCheckpoint(scanPosition, results, productFamily);
+        if (pendingBatch.length >= DETAIL_BATCH_SIZE) {
+          await flushBatch();
+          await sleep(THROTTLE_MS);
         }
-
-        if (processed % AUTO_DOWNLOAD_EVERY === 0) {
-          exportCsv(results, 'checkpoint');
-        }
-
-        await sleep(THROTTLE_MS);
       }
+
+      // Flush any leftover devices that did not fill a complete batch.
+      await flushBatch();
 
       setStatus(`Completed. Processed ${processed} devices.`);
       updateProgress(scanPosition, processed, 'complete');
@@ -535,6 +677,62 @@
     }
   }
 
+  // Batch-fetches Activation Lock status for many serials in one request.
+  // for many serials in one aliased GraphQL request. Returns a Map of
+  // serial -> { lockType, status, family }.
+  //
+  async function getDeviceDetailsBatchSafe(serials) {
+    try {
+      return await retry(() => getDeviceDetailsBatchRaw(serials));
+    } catch (e) {
+      console.warn(`[BATCH DETAILS] Batch of ${serials.length} failed, falling back to individual requests:`, e);
+      const detailsBySerial = new Map();
+      for (const serial of serials) {
+        const device = await getDeviceDetailsSafe(serial);
+        detailsBySerial.set(serial, {
+          lockType: device?.activationLockStatus?.lockType ?? 'Unknown',
+          status: device?.activationLockStatus?.status ?? 'Unknown',
+          family: 'Unknown'
+        });
+        await sleep(THROTTLE_MS);
+      }
+      return detailsBySerial;
+    }
+  }
+
+  // Builds and sends a single GraphQL request covering multiple serials,
+  // using a distinct alias (d0, d1, d2 ...) and variable ($s0, $s1, $s2 ...)
+  // per device, since GraphQL requires unique field/variable names within
+  // one query. Returns a Map of serial -> { lockType, status, family }.
+  async function getDeviceDetailsBatchRaw(serials) {
+    const variableDefs = serials.map((_, i) => `$s${i}: String!`).join(', ');
+    const aliasFields = serials
+      .map((_, i) => `d${i}: device(serial: $s${i}) { activationLockStatus { lockType status } }`)
+      .join('\n        ');
+    const variables = {};
+    serials.forEach((serial, i) => { variables[`s${i}`] = serial; });
+
+    const data = await graphqlRaw({
+      operationName: 'GetDeviceDetailsBatch',
+      variables,
+      query: `query GetDeviceDetailsBatch(${variableDefs}) {
+        ${aliasFields}
+      }`
+    });
+
+    const detailsBySerial = new Map();
+    serials.forEach((serial, i) => {
+      const node = data[`d${i}`];
+      detailsBySerial.set(serial, {
+        lockType: node?.activationLockStatus?.lockType ?? 'Unknown',
+        status: node?.activationLockStatus?.status ?? 'Unknown',
+        family: 'Unknown'
+      });
+    });
+    return detailsBySerial;
+  }
+
+  // Single-device fallback lookup, used only when a batch request fails.
   async function getDeviceDetailsSafe(deviceId) {
     try {
       return await retry(() => getDeviceDetails(deviceId));
@@ -545,19 +743,24 @@
   }
 
   async function* getDevices(startAt = 0, productFamily = null) {
-    // Product-family filtering is intentionally omitted here. The ABM field
-    // name is not public, and the prior guessed deviceType field timed out.
-    // onStartClicked prevents a filtered scan from being started.
-    yield* getObjects(
+    // Native ABM responses confirm product family is nested under searchInfo.
+    // Request it alongside the ID; no GetDeviceDetails schema guess is needed.
+    for await (const device of getObjects(
       'PaginatedDevicesList',
       `query PaginatedDevicesList($limit: Int, $start: Int) {
         page: paginatedDeviceSearch(inputV2: {limit: $limit, start: $start}) {
-          nodes { id }
+          nodes { id searchInfo { deviceName productFamily } }
           totalCount
         }
       }`,
       startAt
-    );
+    )) {
+      yield {
+        id: device.id,
+        name: device.searchInfo?.deviceName ?? 'Unknown',
+        family: device.searchInfo?.productFamily ?? 'Unknown'
+      };
+    }
   }
 
   async function getDeviceDetails(serial) {
@@ -591,7 +794,10 @@
     }
   }
 
-  async function graphql(query) {
+  // Sends a GraphQL request and returns the FULL data object (used for
+  // multi-alias batch queries where there is more than one top-level
+  // field in the response).
+  async function graphqlRaw(query) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
@@ -607,15 +813,26 @@
         }
       );
 
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      // Apple frequently returns its useful GraphQL validation message in
+      // the body of a 400 response. Read it before throwing so the status
+      // panel and DevTools console identify the rejected field/query.
+      const payload = await r.json().catch(() => null);
+      if (!r.ok) {
+        const detail = payload?.errors || payload?.message || payload;
+        const error = new Error(`HTTP ${r.status}${detail ? `: ${JSON.stringify(detail)}` : ''}`);
+        // 400-series responses (apart from rate limiting) are request or
+        // schema errors and repeating them cannot make them succeed.
+        error.nonRetryable = r.status >= 400 && r.status < 500 && r.status !== 429;
+        throw error;
+      }
 
-      const { data, errors } = await r.json();
+      const { data, errors } = payload || {};
       if (errors?.length) {
         const error = new Error(JSON.stringify(errors));
         error.nonRetryable = true;
         throw error;
       }
-      return Object.values(data)[0];
+      return data;
     } catch (e) {
       if (controller.signal.aborted) {
         throw new Error(`${query.operationName} timed out after ${FETCH_TIMEOUT_MS / 1000} seconds`);
@@ -624,6 +841,13 @@
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  // Convenience wrapper for single-top-level-field queries (device list
+  // paging, single-device lookup, keepalive) - returns just that one field.
+  async function graphql(query) {
+    const data = await graphqlRaw(query);
+    return Object.values(data)[0];
   }
 
   async function retry(fn, attempts = MAX_ATTEMPTS, baseDelay = BASE_RETRY_DELAY_MS) {
@@ -666,3 +890,4 @@
     setStatus(`Checkpoint found: ${existingCheckpoint.results.length} devices recorded. Click Start to resume.`);
   }
 })();
+
