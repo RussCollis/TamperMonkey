@@ -4,8 +4,6 @@
 <dataType>string</dataType>
 <scriptContentsMac>#!/bin/zsh
 
-# [KPMG] 2026
-
 : &lt;&lt;'SCRIPT_INFO'
 =============================================================================
 Teams Chat Deep Link - Extension Attribute
@@ -47,8 +45,8 @@ Requirements:  EITHER:
 
 Output:        String - Microsoft Teams deep-link URL, or "Not Available"
 
-IMPORTANT:     This script is specifically designed for KPMG's macOS
-               environment and should only be deployed within KPMG's managed
+IMPORTANT:     This script is specifically designed for a macOS
+               environment and should only be deployed within managed
                infrastructure. It contains organisation-specific
                configurations and should not be used outside of this intended
                environment.
