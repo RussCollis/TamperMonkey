@@ -1,0 +1,143 @@
+﻿<?xml version="1.0" encoding="UTF-8"?><extensionAttribute>
+<displayName>Teams Chat</displayName>
+<description/>
+<dataType>string</dataType>
+<scriptContentsMac>#!/bin/zsh
+
+# [KPMG] 2026
+
+: &lt;&lt;'SCRIPT_INFO'
+=============================================================================
+Teams Chat Deep Link - Extension Attribute
+=============================================================================
+Description:   Reports a Microsoft Teams deep-link URL that opens a 1:1 chat
+               with the currently logged-in console user. Sources the
+               user's email address from whichever identity mechanism is
+               actually populated on the Mac:
+
+                 1. Jamf Connect - UserEmail key within the console user's
+                    com.jamf.connect.state.plist
+                 2. Platform SSO (PSSO) - the registered IdP account
+                    (typically a UPN/email) embedded within the console
+                    user's dsAttrTypeStandard:AltSecurityIdentities
+                    attribute
+
+               Returns "Not Available" if no console user is logged in, or
+               if neither source yields a usable email address.
+
+Author:        Russell Collis
+Created:       29/07/2026
+Updated:       29/07/2026
+Version:       3.0
+
+Notes:         v1.0 sourced email via dscl EMailAddress (found unpopulated
+               in this environment). v2.0 switched to Jamf Connect's
+               com.jamf.connect.state.plist (UserEmail key), which works
+               where Jamf Connect performs an interactive login. v3.0 adds
+               a Platform SSO fallback for Macs where Platform SSO handles
+               authentication instead of (or alongside) Jamf Connect, and
+               where the state plist may not exist or may not be
+               populated as a result.
+
+Requirements:  EITHER:
+                 - Jamf Connect installed with at least one successful
+                   login completed by the console user, OR
+                 - Platform SSO configured and the console user
+                   registered against it (AltSecurityIdentities populated)
+
+Output:        String - Microsoft Teams deep-link URL, or "Not Available"
+
+IMPORTANT:     This script is specifically designed for KPMG's macOS
+               environment and should only be deployed within KPMG's managed
+               infrastructure. It contains organisation-specific
+               configurations and should not be used outside of this intended
+               environment.
+=============================================================================
+=============================================================================
+Changelog
+=============================================================================
+  29/07/2026 - v1.0 - Russell Collis
+    - Initial version, converted from standalone snippet into a Jamf Pro
+      Extension Attribute with console user detection, email validation,
+      and a proper &lt;result&gt; output block. Sourced email via dscl
+      EMailAddress (later found to be unpopulated for this environment).
+  29/07/2026 - v2.0 - Russell Collis
+    - Reworked email lookup to read UserEmail from Jamf Connect's
+      com.jamf.connect.state.plist instead of the dscl EMailAddress
+      attribute, per confirmed working lookup method.
+  29/07/2026 - v3.0 - Russell Collis
+    - Added a Platform SSO fallback: where the Jamf Connect state plist
+      doesn't exist or isn't populated, the script now attempts to parse
+      the registered IdP account (email/UPN) out of the console user's
+      dsAttrTypeStandard:AltSecurityIdentities attribute instead, so the
+      EA works correctly on Macs authenticating via Platform SSO.
+=============================================================================
+SCRIPT_INFO
+
+# -----------------------------------------------------------------------
+# Determine the currently logged-in console user (ignoring root and
+# loginwindow, which stat -f%Su can occasionally return during odd
+# session states, e.g. at the login window with nobody signed in).
+# -----------------------------------------------------------------------
+consoleUser=$(stat -f%Su /dev/console)
+
+# -----------------------------------------------------------------------
+# Guard clause: bail out early with a safe EA result if there's no genuine
+# interactive console user currently logged in.
+# -----------------------------------------------------------------------
+if [[ -z "$consoleUser" || "$consoleUser" == "root" || "$consoleUser" == "loginwindow" ]]; then
+    echo "&lt;result&gt;Not Available&lt;/result&gt;"
+    exit 0
+fi
+
+assignedUserEmail=""
+
+# -----------------------------------------------------------------------
+# SOURCE 1: Jamf Connect
+# Build the path to the console user's Jamf Connect state plist, where
+# Jamf Connect stores the authenticated user's email address (UserEmail)
+# following a successful interactive login.
+# -----------------------------------------------------------------------
+jamfConnectStateLocation="/Users/${consoleUser}/Library/Preferences/com.jamf.connect.state.plist"
+
+if [[ -f "$jamfConnectStateLocation" ]]; then
+    assignedUserEmail=$(/usr/libexec/PlistBuddy -c "Print :UserEmail" "$jamfConnectStateLocation" 2&gt;/dev/null)
+fi
+
+# -----------------------------------------------------------------------
+# SOURCE 2: Platform SSO (fallback)
+# Only attempted if Source 1 didn't yield anything. Platform SSO writes
+# its registration details into dsAttrTypeStandard:AltSecurityIdentities
+# on the local user record, with the registered IdP account (typically a
+# UPN/email address) embedded in that string after "PlatformSSO:".
+#
+# Splitting on the literal string "SSO:" isolates the value that follows
+# "PlatformSSO:" (the "Platform" portion is split off, leaving the
+# account identifier), which is then trimmed of any leading whitespace.
+# -----------------------------------------------------------------------
+if [[ -z "$assignedUserEmail" ]]; then
+    pssoAccountIdentifier=$(dscl . -read "/Users/${consoleUser}" dsAttrTypeStandard:AltSecurityIdentities 2&gt;/dev/null \
+        | awk -F'SSO:' '/PlatformSSO/ {print $2}' \
+        | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+
+    # Only accept the parsed value if it actually looks like an email
+    # address (contains an '@'), to avoid building a malformed deep link
+    # from an unexpected AltSecurityIdentities format.
+    if [[ "$pssoAccountIdentifier" == *"@"* ]]; then
+        assignedUserEmail="$pssoAccountIdentifier"
+    fi
+fi
+
+# -----------------------------------------------------------------------
+# Build and return the Teams deep-link URL if either source above
+# yielded a usable email address; otherwise report gracefully.
+# -----------------------------------------------------------------------
+if [[ -n "$assignedUserEmail" ]]; then
+    teamsDeepLink="https://teams.microsoft.com/l/chat/0/0?users=${assignedUserEmail}"
+    echo "&lt;result&gt;${teamsDeepLink}&lt;/result&gt;"
+else
+    echo "&lt;result&gt;Not Available&lt;/result&gt;"
+fi
+
+exit 0</scriptContentsMac>
+</extensionAttribute>
