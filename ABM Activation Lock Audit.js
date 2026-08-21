@@ -24,9 +24,6 @@ Replace *YourORG* with updfatyed field and delete this line
  *                authenticated) GraphQL endpoint and records Activation
  *                Lock status, exporting to CSV.
  *
- * Author:        Russell Collis
- * Created:       20/08/2026
- * Version:       1.0
  *
  * Notes:         Converted from a manual DevTools console script (v2.0) to
  *                a Tampermonkey userscript so the scan is started from an
