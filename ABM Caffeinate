@@ -1,0 +1,43 @@
+// ==UserScript==
+// @name        ABM Caffeinate
+// @version     0.1
+// @description Simulates mousedown events every few minutes, to keep Apple Business Manager sessions alive
+// @match       https://business.apple.com/*
+// @noframes
+// @author      Russell Collis (adapted from JSS Caffeinate by Florin Veja, 2022)
+// ==/UserScript==
+
+console.log("Started ABM Caffeinate. Running on " + location.href);
+
+// Delay, in milliseconds, before we send a mousedown event (120000 ms = 2 min)
+const delay = 120000;
+
+var last = Date.now();
+const name = "ABM Caffeinate";
+
+// Set to true for debug console output
+const abmCaffeinateDebug = false;
+
+const debug = (m) => {
+    typeof abmCaffeinateDebug == "boolean" && abmCaffeinateDebug && console.log(name + " debug: " + m);
+};
+
+// Returns a randomised delay so keepalive events don't fire at a
+// perfectly predictable interval (avoids looking like a bot/race)
+const getDelay = (max) => {
+    const min = 10000;
+    return Math.random() * (max - min) + min;
+};
+
+// Apple Business Manager uses Apple ID SSO session cookies rather than a
+// JSS-style localStorage authToken, so there is no token expiry check here.
+// If ABM redirects to a sign-in page, the keepalive will simply stop having
+// an effect until the user re-authenticates manually.
+const cafe = setInterval(() => {
+    var start = Date.now();
+    const mousedown = new Event("mousedown");
+    debug("ABM Caffeinate keepalive " + start);
+    document.dispatchEvent(mousedown);
+    debug(last + " - " + start + " = " + (start - last));
+    last = start;
+}, delay);
