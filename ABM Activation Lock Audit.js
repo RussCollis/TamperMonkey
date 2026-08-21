@@ -1,9 +1,14 @@
+Replace *YourORG* with updfatyed field and delete this line
+
+
+
 // ==UserScript==
-// @name         KPMG ABM Activation Lock Audit - 2.0.1
-// @namespace    kpmg.macos.abm.activationlockaudit
+// @name         *YourORG* ABM Activation Lock Audit - 2.0.1
+// @namespace    *YourORG*.macos.abm.activationlockaudit
 // @version      2.0.1
 // @description  Overlay button on Apple Business Manager to scan all devices and export Activation Lock status to CSV
-// @author       Russell Collis
+// @author       Gabriel Sroka
+// @updated      Russ Collis
 // @match        https://business.apple.com/*
 // @match        https://school.apple.com/*
 // @grant        none
@@ -11,7 +16,7 @@
 // ==/UserScript==
 
 /* =============================================================================
- * KPMG ABM Activation Lock Audit - Tampermonkey Userscript
+ * *YourORG* ABM Activation Lock Audit - Tampermonkey Userscript
  * =============================================================================
  * Description:   Injects a floating control panel onto Apple Business
  *                Manager with Start/Stop/Resume/Download controls. Scans
@@ -54,8 +59,8 @@
  *                APIs cannot supply the data (e.g. devices not yet
  *                enrolled in Jamf).
  *
- * IMPORTANT:     This script is specifically designed for KPMG's macOS
- *                environment and should only be deployed within KPMG's
+ * IMPORTANT:     This script is specifically designed for *YourORG*'s macOS
+ *                environment and should only be deployed within *YourORG*'s
  *                managed infrastructure. It contains organisation-specific
  *                configurations and should not be used outside of this
  *                intended environment.
@@ -82,7 +87,7 @@
  *                        comparison to a normalised (lowercase, spaces/
  *                        hyphens stripped) match instead of an ALL-CAPS
  *                        enum match. Based on evidence from Warranty
- *                        Wrangler (KPMG's ABM REST API script), which
+ *                        Wrangler (*YourORG*'s ABM REST API script), which
  *                        confirms Apple's official, documented ABM REST
  *                        API exposes this exact attribute as
  *                        `.attributes.productFamily` with values such as
@@ -155,7 +160,7 @@
   // GUESSED field name for a device's family/type on ABM's GraphQL device
   // object (e.g. device(serial: $s) { productFamily }). This is NOT from
   // public documentation for the internal GraphQL endpoint, but "Warranty
-  // Wrangler" (KPMG's ABM REST API script) confirms Apple's OFFICIAL,
+  // Wrangler" (*YourORG*'s ABM REST API script) confirms Apple's OFFICIAL,
   // documented ABM REST API (api-business.apple.com/v1/orgDevices) exposes
   // this exact attribute as `.attributes.productFamily`. The internal
   // GraphQL endpoint used here is a different API, so this is still a
@@ -201,7 +206,7 @@
 
   function injectPanel() {
     const panel = document.createElement('div');
-    panel.id = 'kpmg-abm-audit-panel';
+    panel.id = '*YourORG*-abm-audit-panel';
     panel.style.cssText = `
       position: fixed;
       bottom: 20px;
@@ -218,15 +223,15 @@
     `;
 
     panel.innerHTML = `
-      <div style="font-weight:600; margin-bottom:8px;">KPMG Activation Lock Audit</div>
-      <div id="kpmg-abm-status" style="opacity:0.85; margin-bottom:10px; line-height:1.4;">Idle.</div>
-      <div id="kpmg-abm-progress-text" style="font-size:11px; opacity:0.78; margin-bottom:4px;">Scan progress: not started</div>
+      <div style="font-weight:600; margin-bottom:8px;">*YourORG* Activation Lock Audit</div>
+      <div id="*YourORG*-abm-status" style="opacity:0.85; margin-bottom:10px; line-height:1.4;">Idle.</div>
+      <div id="*YourORG*-abm-progress-text" style="font-size:11px; opacity:0.78; margin-bottom:4px;">Scan progress: not started</div>
       <div style="height:6px; overflow:hidden; border-radius:3px; background:#3a3a3c; margin-bottom:10px;">
-        <div id="kpmg-abm-progress-bar" style="height:100%; width:0%; background:#30d158; transition:width 120ms linear;"></div>
+        <div id="*YourORG*-abm-progress-bar" style="height:100%; width:0%; background:#30d158; transition:width 120ms linear;"></div>
       </div>
       <label style="display:block; margin-bottom:8px; font-size:12px;">
         Product family
-        <select id="kpmg-abm-product-family" style="float:right; max-width:130px; border-radius:4px; border:1px solid #636366; background:#2c2c2e; color:#f5f5f7; padding:2px 4px;">
+        <select id="*YourORG*-abm-product-family" style="float:right; max-width:130px; border-radius:4px; border:1px solid #636366; background:#2c2c2e; color:#f5f5f7; padding:2px 4px;">
           <option value="all">All devices</option>
           <option value="mac">Mac</option>
           <option value="iphone">iPhone</option>
@@ -235,51 +240,51 @@
       </label>
       <div style="margin:-4px 0 8px; font-size:11px; opacity:0.72; line-height:1.3;">Filter is applied per device as it's checked, so every device is still scanned regardless of family selected - only the saved/exported rows are narrowed.</div>
       <div style="display:flex; gap:6px;">
-        <button id="kpmg-abm-start" type="button" style="flex:1; padding:6px 8px; border:none; border-radius:6px; background:#0071e3; color:#fff; cursor:pointer;">Start Scan</button>
-        <button id="kpmg-abm-stop" type="button" style="flex:1; padding:6px 8px; border:none; border-radius:6px; background:#3a3a3c; color:#fff; cursor:pointer;" disabled>Stop</button>
+        <button id="*YourORG*-abm-start" type="button" style="flex:1; padding:6px 8px; border:none; border-radius:6px; background:#0071e3; color:#fff; cursor:pointer;">Start Scan</button>
+        <button id="*YourORG*-abm-stop" type="button" style="flex:1; padding:6px 8px; border:none; border-radius:6px; background:#3a3a3c; color:#fff; cursor:pointer;" disabled>Stop</button>
       </div>
       <div style="display:flex; gap:6px; margin-top:6px;">
-        <button id="kpmg-abm-download" type="button" style="flex:1; padding:6px 8px; border:none; border-radius:6px; background:#3a3a3c; color:#fff; cursor:pointer;">Download current results</button>
+        <button id="*YourORG*-abm-download" type="button" style="flex:1; padding:6px 8px; border:none; border-radius:6px; background:#3a3a3c; color:#fff; cursor:pointer;">Download current results</button>
       </div>
       <div style="display:flex; gap:6px; margin-top:6px;">
-        <button id="kpmg-abm-import" type="button" style="flex:1; padding:6px 8px; border:none; border-radius:6px; background:#3a3a3c; color:#fff; cursor:pointer;">Load source CSV</button>
-        <input id="kpmg-abm-source-file" type="file" accept=".csv,text/csv" style="display:none;">
+        <button id="*YourORG*-abm-import" type="button" style="flex:1; padding:6px 8px; border:none; border-radius:6px; background:#3a3a3c; color:#fff; cursor:pointer;">Load source CSV</button>
+        <input id="*YourORG*-abm-source-file" type="file" accept=".csv,text/csv" style="display:none;">
       </div>
       <div style="margin-top:6px; font-size:11px; opacity:0.72; line-height:1.3;">Load a previous audit CSV to keep its rows. Existing device IDs will be skipped; new results are appended.</div>
-      <div id="kpmg-abm-foreground-warning" style="margin-top:10px; font-size:11px; color:#ff9f0a; display:none;">
+      <div id="*YourORG*-abm-foreground-warning" style="margin-top:10px; font-size:11px; color:#ff9f0a; display:none;">
         Keep this tab in the foreground - backgrounding it can throttle or pause the scan.
       </div>
     `;
 
     document.body.appendChild(panel);
 
-    document.getElementById('kpmg-abm-start').addEventListener('click', onStartClicked);
-    document.getElementById('kpmg-abm-stop').addEventListener('click', onStopClicked);
-    document.getElementById('kpmg-abm-download').addEventListener('click', () => {
+    document.getElementById('*YourORG*-abm-start').addEventListener('click', onStartClicked);
+    document.getElementById('*YourORG*-abm-stop').addEventListener('click', onStopClicked);
+    document.getElementById('*YourORG*-abm-download').addEventListener('click', () => {
       exportCsv(currentResults, 'manual');
     });
-    document.getElementById('kpmg-abm-import').addEventListener('click', () => {
-      document.getElementById('kpmg-abm-source-file').click();
+    document.getElementById('*YourORG*-abm-import').addEventListener('click', () => {
+      document.getElementById('*YourORG*-abm-source-file').click();
     });
-    document.getElementById('kpmg-abm-source-file').addEventListener('change', onSourceFileSelected);
+    document.getElementById('*YourORG*-abm-source-file').addEventListener('change', onSourceFileSelected);
 
     document.addEventListener('visibilitychange', () => {
-      const warning = document.getElementById('kpmg-abm-foreground-warning');
+      const warning = document.getElementById('*YourORG*-abm-foreground-warning');
       if (!warning) return;
       warning.style.display = (document.hidden && scanRunning) ? 'block' : 'none';
     });
   }
 
   function setStatus(text) {
-    const el = document.getElementById('kpmg-abm-status');
+    const el = document.getElementById('*YourORG*-abm-status');
     if (el) el.textContent = text;
   }
 
   function setRunningUiState(running) {
     scanRunning = running;
-    const startBtn = document.getElementById('kpmg-abm-start');
-    const stopBtn = document.getElementById('kpmg-abm-stop');
-    const productFamily = document.getElementById('kpmg-abm-product-family');
+    const startBtn = document.getElementById('*YourORG*-abm-start');
+    const stopBtn = document.getElementById('*YourORG*-abm-stop');
+    const productFamily = document.getElementById('*YourORG*-abm-product-family');
     if (startBtn) startBtn.disabled = running;
     if (stopBtn) stopBtn.disabled = !running;
     if (productFamily) productFamily.disabled = running;
@@ -290,7 +295,7 @@
   let totalDevicesInScope = null;
 
   function selectedProductFamily() {
-    const value = document.getElementById('kpmg-abm-product-family')?.value || 'all';
+    const value = document.getElementById('*YourORG*-abm-product-family')?.value || 'all';
     return PRODUCT_FAMILIES[value] ?? null;
   }
 
@@ -300,8 +305,8 @@
   }
 
   function updateProgress(scanned, saved, state = '') {
-    const text = document.getElementById('kpmg-abm-progress-text');
-    const bar = document.getElementById('kpmg-abm-progress-bar');
+    const text = document.getElementById('*YourORG*-abm-progress-text');
+    const bar = document.getElementById('*YourORG*-abm-progress-bar');
     const percentage = totalDevicesInScope === null
       ? 0
       : Math.min(100, (scanned / Math.max(totalDevicesInScope, 1)) * 100);
