@@ -1,0 +1,47 @@
+// ==UserScript==
+// @name         Replace Jamf Protect Logo with Subdomain
+// @namespace    http://tampermonkey.net/
+// @version      1.2
+// @description  Replace Jamf Protect logo text with the tenant subdomain
+// @author       Russ
+// @match        *://*.protect.jamfcloud.com/*
+// @grant        none
+// @run-at       document-idle
+// ==/UserScript==
+
+(function () {
+    "use strict";
+
+    const subdomain = location.hostname.split(".")[0].toUpperCase();
+
+    function updateLogo() {
+        const logo = document.querySelector("jamf-nav-logo");
+        const shadowRoot = logo?.shadowRoot;
+        if (!shadowRoot) return false;
+
+        const title = shadowRoot.querySelector('[part="logo-title"]');
+        if (!title) return false;
+
+        title.innerHTML = `${subdomain}<br>Protect`;
+        return true;
+    }
+
+    function start() {
+        updateLogo();
+
+        const observer = new MutationObserver(() => {
+            updateLogo();
+        });
+
+        observer.observe(document.documentElement, {
+            childList: true,
+            subtree: true,
+        });
+    }
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", start, { once: true });
+    } else {
+        start();
+    }
+})();
