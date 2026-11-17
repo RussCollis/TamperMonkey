@@ -1,47 +1,166 @@
 // ==UserScript==
-// @name         Replace Jamf Protect Logo with Subdomain
+// @name         Replace Pro Text with Jamfcloud Subdomain
 // @namespace    http://tampermonkey.net/
-// @version      1.2
-// @description  Replace Jamf Protect logo text with the tenant subdomain
+// @version      0.3
+// @description  Replace 'Pro' text with the subdomain on *.jamfcloud.com domains. Shows the label in red on DEV/Development instances.
 // @author       Russ
-// @match        *://*.protect.jamfcloud.com/*
+// @match        *://*.jamfcloud.com/*
 // @grant        none
-// @run-at       document-idle
 // ==/UserScript==
+
+/*
+ * =============================================================================
+ *  CHANGE LOG
+ * =============================================================================
+ *  0.3 - Jamf Pro UI update: the logo is now <jp-nav-logo id="side-nav-logo">
+ *        (was <jamf-nav-logo> inside #side-nav-logo > a) and it lives INSIDE
+ *        the app shell's shadow root, so document.querySelector() can no
+ *        longer see it. Added a shadow-DOM-piercing search, a text-based
+ *        match for the "Pro" label (no brittle nth-child selector), and a
+ *        watcher that re-applies the label if Angular re-renders the nav.
+ *        The new "Sandbox" badge (<jp-sandbox-banner>) is left untouched.
+ *  0.2 - Red label on DEV / Development instances.
+ *  0.1 - Initial version.
+ * =============================================================================
+ */
 
 (function () {
     "use strict";
 
-    const subdomain = location.hostname.split(".")[0].toUpperCase();
+    // -------------------------------------------------------------------------
+    //  SETTINGS
+    // -------------------------------------------------------------------------
 
-    function updateLogo() {
-        const logo = document.querySelector("jamf-nav-logo");
-        const shadowRoot = logo?.shadowRoot;
-        if (!shadowRoot) return false;
+    // Colour used to flag non-production instances
+    const DEV_COLOUR = "#E53935";
 
-        const title = shadowRoot.querySelector('[part="logo-title"]');
-        if (!title) return false;
+    // How often (ms) we look for the logo / check it is still labelled.
+    // Angular renders late and can re-render the nav when you navigate,
+    // so a cheap periodic check is the most reliable approach.
+    const CHECK_INTERVAL_MS = 1000;
 
-        title.innerHTML = `${subdomain}<br>Protect`;
-        return true;
+    // Marker attribute so we can tell our own span apart from a fresh
+    // Angular-rendered one (and never double-apply).
+    const DONE_ATTR = "data-subdomain-label";
+
+    // -------------------------------------------------------------------------
+    //  HELPERS
+    // -------------------------------------------------------------------------
+
+    // Check the hostname only (not the full URL) - Jamf paths such as
+    // mobileDevices.html contain "dev" and would otherwise trigger a false match.
+    // "dev" also covers "development".
+    function isDevInstance() {
+        return window.location.hostname.toLowerCase().includes("dev");
     }
 
-    function start() {
-        updateLogo();
+    /*
+     * deepQuery(selector, root)
+     * -------------------------
+     * Like document.querySelector(), but also searches inside every OPEN
+     * shadow root it finds on the way down. Needed because the new Jamf UI
+     * puts <jp-nav-logo> inside the app shell's shadow DOM, which a normal
+     * querySelector cannot see into.
+     */
+    function deepQuery(selector, root = document) {
+        // 1. Try the current root directly first (fast path)
+        const direct = root.querySelector(selector);
+        if (direct) return direct;
 
-        const observer = new MutationObserver(() => {
-            updateLogo();
-        });
-
-        observer.observe(document.documentElement, {
-            childList: true,
-            subtree: true,
-        });
+        // 2. Otherwise walk every element in this root and recurse into any
+        //    shadow roots hanging off them
+        const all = root.querySelectorAll("*");
+        for (const el of all) {
+            if (el.shadowRoot) {
+                const found = deepQuery(selector, el.shadowRoot);
+                if (found) return found;
+            }
+        }
+        return null;
     }
 
-    if (document.readyState === "loading") {
-        document.addEventListener("DOMContentLoaded", start, { once: true });
-    } else {
-        start();
+    /*
+     * findProLabel(root)
+     * ------------------
+     * Searches the logo component (its light DOM AND its shadow DOM, recursively)
+     * for the innermost element whose text is exactly "Pro". Matching on text
+     * instead of a "div > div:nth-child(2) > span" path means small markup
+     * changes from Jamf won't break the script again.
+     *
+     * Elements inside <jp-sandbox-banner> are skipped so the "Sandbox" badge
+     * is never touched.
+     */
+    function findProLabel(root) {
+        // Gather the roots to search: the element itself, plus its shadow root
+        const roots = [root];
+        if (root.shadowRoot) roots.push(root.shadowRoot);
+
+        for (const r of roots) {
+            for (const el of r.querySelectorAll("*")) {
+                // Ignore the sandbox badge entirely
+                if (el.closest("jp-sandbox-banner")) continue;
+
+                // Leaf-ish element whose own text is "Pro" = our target
+                if (el.children.length === 0 && el.textContent.trim() === "Pro") {
+                    return el;
+                }
+
+                // Recurse into nested custom elements with their own shadow DOM
+                if (el.shadowRoot) {
+                    const nested = findProLabel(el);
+                    if (nested) return nested;
+                }
+            }
+        }
+        return null;
     }
+
+    // -------------------------------------------------------------------------
+    //  MAIN
+    // -------------------------------------------------------------------------
+
+    // Cached reference to the logo host so we don't deep-scan the whole page
+    // every second once it's been found. Reset if Angular removes it.
+    let logoHost = null;
+
+    function replaceProText() {
+        // (Re)locate the logo if we don't have it, or Angular swapped it out
+        if (!logoHost || !logoHost.isConnected) {
+            // New UI: <jp-nav-logo id="side-nav-logo">
+            // Old UI fallback: #side-nav-logo > a > jamf-nav-logo
+            logoHost =
+                deepQuery("jp-nav-logo") ||
+                deepQuery("#side-nav-logo jamf-nav-logo") ||
+                deepQuery("#side-nav-logo");
+        }
+        if (!logoHost) return; // Not rendered yet - try again next tick
+
+        // Find the "Pro" text. If it's not there, either we've already replaced
+        // it (good) or the component hasn't rendered its contents yet.
+        const span = findProLabel(logoHost);
+        if (!span || span.hasAttribute(DONE_ATTR)) return;
+
+        // Extract the subdomain from the current *.jamfcloud.com domain and capitalise it
+        const subdomain = window.location.hostname.split(".")[0].toUpperCase();
+
+        // Replace 'Pro' with the subdomain and add 'Jamf Pro' on a new line
+        span.innerHTML = `${subdomain}<br>Jamf Pro`;
+        span.setAttribute(DONE_ATTR, "true");
+
+        // Let the label wrap onto two lines even if the new layout uses
+        // nowrap / a fixed line-height for the single word "Pro"
+        span.style.setProperty("white-space", "normal", "important");
+        span.style.setProperty("line-height", "1.1", "important");
+
+        // Highlight DEV / Development instances in red
+        if (isDevInstance()) {
+            span.style.setProperty("color", DEV_COLOUR, "important");
+            span.style.setProperty("font-weight", "bold", "important");
+        }
+    }
+
+    // Run once on load, then keep checking - handles Angular's late render
+    // and any re-render of the nav when moving between pages (SPA routing).
+    window.addEventListener("load", replaceProText);
+    setInterval(replaceProText, CHECK_INTERVAL_MS);
 })();
